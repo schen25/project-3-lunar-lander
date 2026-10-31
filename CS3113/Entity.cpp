@@ -6,17 +6,23 @@ Entity::Entity() :
     mScale{ DEFAULT_SIZE, DEFAULT_SIZE },
     mColliderDimensions{ DEFAULT_SIZE, DEFAULT_SIZE },
     mTexture{}, mTextureType{ SINGLE }, mSpriteSheetDimensions{},
-    mAnimationAtlas{}, mAnimationIndices{}, mDirection{ FALLING },
-    mFrameSpeed{ 0 }, mSpeed{ DEFAULT_SPEED }, mAngle{ 0.0f } {}
+    mAnimationAtlas{}, mAnimationIndices{}, mAction{ NO_ACTION },
+    mFrameSpeed{ 0 }, mSpeed{ DEFAULT_SPEED }, mAngle{ 0.0f },
+    mEntityType{ NONE } {}
 
-Entity::Entity(Vector2 position, Vector2 scale, const char *textureFilepath) :
+Entity::Entity(
+    Vector2     position,
+    Vector2     scale,
+    const char *textureFilepath,
+    EntityType  entityType
+) :
     mPosition{ position }, mMovement{ 0.0f, 0.0f },
     mVelocity{ 0.0f, 0.0f }, mAcceleration{ 0.0f, 0.0f },
     mScale{ scale }, mColliderDimensions{ scale },
     mTexture{ LoadTexture(textureFilepath) }, mTextureType{ SINGLE },
     mSpriteSheetDimensions{}, mAnimationAtlas{}, mAnimationIndices{},
-    mDirection{ FALLING }, mFrameSpeed{ 0 }, mSpeed{ DEFAULT_SPEED },
-    mAngle{ 0.0f } {}
+    mAction{ NO_ACTION }, mFrameSpeed{ 0 }, mSpeed{ DEFAULT_SPEED },
+    mAngle{ 0.0f }, mEntityType{ entityType } {}
 
 Entity::Entity(
     Vector2                               position,
@@ -24,7 +30,8 @@ Entity::Entity(
     const char                           *textureFilepath,
     TextureType                           textureType,
     Vector2                               spriteSheetDimensions,
-    std::map<Direction, std::vector<int>> animationAtlas
+    std::map<Action, std::vector<int>> animationAtlas,
+    EntityType                            entityType
 ) :
     mPosition{ position }, mMovement{ 0.0f, 0.0f },
     mVelocity{ 0.0f, 0.0f }, mAcceleration{ 0.0f, 0.0f },
@@ -32,9 +39,9 @@ Entity::Entity(
     mTexture{ LoadTexture(textureFilepath) }, mTextureType{ textureType },
     mSpriteSheetDimensions{ spriteSheetDimensions },
     mAnimationAtlas{ animationAtlas },
-    mAnimationIndices{ animationAtlas.at(FALLING) }, mDirection{ FALLING },
+    mAnimationIndices{ animationAtlas.at(NO_ACTION) }, mAction{ NO_ACTION },
     mFrameSpeed{ DEFAULT_FRAME_SPEED }, mSpeed{ DEFAULT_SPEED },
-    mAngle{ 0.0f } {}
+    mAngle{ 0.0f }, mEntityType{ entityType } {}
 
 Entity::~Entity() { UnloadTexture(mTexture); }
 
@@ -46,7 +53,7 @@ Entity::~Entity() { UnloadTexture(mTexture); }
  */
 void Entity::animate(float deltaTime)
 {
-    mAnimationIndices = mAnimationAtlas.at(mDirection);
+    mAnimationIndices = mAnimationAtlas.at(mAction);
 
     mAnimationTime += deltaTime;
     float secondsPerFrame = 1.0f / mFrameSpeed;
@@ -70,9 +77,9 @@ bool Entity::isColliding(Entity *other) const
     return xDistance < 0.0f && yDistance < 0.0f;
 }
 
-void Entity::checkCollisionY(Entity *collidableEntities, int entityCount){
+void Entity::checkCollisionY(const std::vector<Entity*>& collidableEntities, int entityCount){
     for (int i = 0; i < entityCount; i++){
-        Entity *collidableEntity = &collidableEntities[i];
+        Entity *collidableEntity = collidableEntities[i];
 
         if (isColliding(collidableEntity)){
             float yDistance = fabs(mPosition.y - collidableEntity->getPosition().y);
@@ -81,18 +88,23 @@ void Entity::checkCollisionY(Entity *collidableEntities, int entityCount){
             if (mVelocity.y > 0){
                 mPosition.y -= yOverlap;
                 mVelocity.y = 0;
+                mIsCollidingBottom  = true;
+                if (collidableEntity -> mEntityType == WATER) mHasCollidedWaterTop = true;
+                else if (collidableEntity -> mEntityType == CLOUD || 
+                        collidableEntity -> mEntityType == GRASS) mHasCollidedGrassOrCloudTop = true;
             }
             else if (mVelocity.y < 0){
                 mPosition.y += yOverlap;
                 mVelocity.y = 0;
+                mIsCollidingTop  = true;
             }
         }
     }
 }
 
-void Entity::checkCollisionX(Entity *collidableEntities, int entityCount){
+void Entity::checkCollisionX(const std::vector<Entity*>& collidableEntities, int entityCount){
     for (int i = 0; i < entityCount; i++){
-        Entity *collidableEntity = &collidableEntities[i];
+        Entity *collidableEntity = collidableEntities[i];
 
         if (isColliding(collidableEntity)){
             float xDistance = fabs(mPosition.x - collidableEntity->getPosition().x);
@@ -106,44 +118,61 @@ void Entity::checkCollisionX(Entity *collidableEntities, int entityCount){
             if (mVelocity.x > 0){
                 mPosition.x -= xOverlap;
                 mVelocity.x = 0;
+
+                // Collision!
+                mIsCollidingRight = true;
             }
             else if (mVelocity.x < 0){
                 mPosition.x += xOverlap;
                 mVelocity.x = 0;
+
+                // Collision!
+                mIsCollidingLeft = true;
             }
         }
     }
 }
 
-void Entity::update(float deltaTime, Entity *collidableEntities, int entityCount)
+void Entity::update(float deltaTime, const std::vector<Entity*>& collidableEntities, int entityCount)
 {
     if (mEntityStatus == INACTIVE) return;
+    resetColliderFlags();
 
-    if (mIsUsingJetpack){
-        if (mFuel > 0.0f) {
-            mAcceleration.y = ACCELERATION_OF_GRAVITY - mJetpackPower*cosf(mAngle*PI/180.0f);
-            mAcceleration.x = mJetpackPower*sinf(mAngle*PI/180.0f);
-            mFuel = std::max(0.0f, mFuel - mFuelConsumption*deltaTime);
+    if (mEntityType == PLAYER){
+        if (mIsUsingJetpack){
+            if (mFuel > 0.0f) {
+                mAcceleration.y = ACCELERATION_OF_GRAVITY - mJetpackPower*cosf(mAngle*PI/180.0f);
+                mAcceleration.x = mJetpackPower*sinf(mAngle*PI/180.0f);
+                mFuel = std::max(0.0f, mFuel - mFuelConsumption*deltaTime);
+            }
+            else {
+                mIsUsingJetpack = false;
+            }
         }
-        else {
-            mIsUsingJetpack = false;
+        else{
+            mAcceleration.y = ACCELERATION_OF_GRAVITY;
+            mAcceleration.x = 0.0f;
         }
+
+
+        // mVelocity.x = mMovement.x * mSpeed;
+        mVelocity.x += mAcceleration.x * deltaTime;
+        mVelocity.y += mAcceleration.y * deltaTime;
+        mPosition.x += mVelocity.x * deltaTime;
+        mPosition.y += mVelocity.y * deltaTime;
+
+        checkCollisionX(collidableEntities, entityCount);
+        checkCollisionY(collidableEntities, entityCount);
     }
-    else{
-        mAcceleration.y = ACCELERATION_OF_GRAVITY;
-        mAcceleration.x = 0.0f;
+
+    if (mEntityType == CLOUD){
+        if (mPosition.x >= 1000-250.0f-25.0f && mMovement.x == 1) mMovement.x = -1;
+        else if (mPosition.x <= 250.0f+25.0f && mMovement.x == -1) mMovement.x = 1;
+        mVelocity.x = mMovement.x * mSpeed;
+        mPosition.x += mVelocity.x * deltaTime;
     }
 
-    mVelocity.x = mMovement.x * mSpeed;
-    mVelocity.x += mAcceleration.x * deltaTime;
-    mVelocity.y += mAcceleration.y * deltaTime;
-    mPosition.x += mVelocity.x * deltaTime;
-    mPosition.y += mVelocity.y * deltaTime;
-
-    checkCollisionY(collidableEntities, entityCount);
-    checkCollisionX(collidableEntities, entityCount);
-
-    if (mTextureType == ATLAS)// && GetLength(mMovement) != 0)
+    if (mTextureType == ATLAS)
         animate(deltaTime);
 }
 
